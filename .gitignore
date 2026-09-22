@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environment — secrets never enter version control
+.env
+.env.*
+!.env.example
+
+# Editors
+.idea/
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Load test artefacts
+loadtest/results/
