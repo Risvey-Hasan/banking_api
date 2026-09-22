@@ -1,3 +1,5 @@
+from urllib.parse import quote_plus
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,9 +21,20 @@ class Settings(BaseSettings):
     health_probe_timeout: float = 2.0
 
     @property
+    def _pg_credentials(self) -> str:
+        return f"{quote_plus(self.postgres_user)}:{quote_plus(self.postgres_password)}"
+
+    @property
     def database_url(self) -> str:
         return (
-            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql://{self._pg_credentials}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def alembic_database_url(self) -> str:
+        return (
+            f"postgresql+asyncpg://{self._pg_credentials}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
 

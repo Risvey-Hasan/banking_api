@@ -21,8 +21,8 @@ async def connect() -> None:
             command_timeout=settings.pg_command_timeout,
         )
         log.info("postgres pool created")
-    except Exception:
-        log.exception("postgres pool creation failed; starting degraded")
+    except (OSError, asyncpg.PostgresError, asyncio.TimeoutError):
+        log.exception("postgres unreachable at startup; starting degraded")
         _pool = None
 
 
