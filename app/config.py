@@ -17,11 +17,18 @@ class Settings(BaseSettings):
     redis_stream: str = "transactions"
     redis_group: str = "processors"
     redis_stream_maxlen: int = 100_000
+    redis_socket_timeout: float = 2.0
+    redis_connect_timeout: float = 2.0
 
     pg_pool_min: int = 1
     pg_pool_max: int = 10
     pg_command_timeout: float = 5.0
     health_probe_timeout: float = 2.0
+
+    crash_after_commit: bool = False
+    worker_block_ms: int = 5000
+    worker_batch: int = 16
+    worker_min_idle_ms: int = 30000
 
     @property
     def _pg_credentials(self) -> str:

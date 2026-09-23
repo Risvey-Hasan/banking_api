@@ -10,10 +10,17 @@ log = logging.getLogger(__name__)
 _client: aioredis.Redis | None = None
 
 
-async def connect() -> None:
+async def connect(socket_timeout: float | None = None) -> None:
     global _client
-    _client = aioredis.from_url(settings.redis_url, decode_responses=True)
-    log.info("redis client created")
+    _client = aioredis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_timeout=socket_timeout or settings.redis_socket_timeout,
+        socket_connect_timeout=settings.redis_connect_timeout,
+        health_check_interval=30,
+    )
+    log.info("redis client created (socket_timeout=%s)",
+             socket_timeout or settings.redis_socket_timeout)
 
 
 async def disconnect() -> None:
