@@ -57,7 +57,7 @@ async def main() -> None:
         for second in range(DURATION):
             if second == STOP_AT:
                 print(f"[t={second:2d}s] *** stopping redis ***")
-                compose("stop", "redis")
+                await asyncio.to_thread(compose, "stop", "redis")
             if second == START_AT:
                 print(f"[t={second:2d}s] *** starting redis ***")
                 compose("start", "redis")
@@ -79,9 +79,19 @@ async def main() -> None:
             await asyncio.sleep(max(0.0, 1.0 - (time.monotonic() - tick)))
 
         print(f"\nsubmitted : {sum(outcomes.values())}")
-        print(f"accepted  : {len(accepted)}")
         print(f"outcomes  : {dict(outcomes)}")
         print(f"health    : {dict(health)}")
+
+        # Ask the server which ids actually exist.
+        all_ids = [
+            f"TX-R{stamp}-{s:03d}-{i:02d}"
+            for s in range(DURATION) for i in range(RATE)
+        ]
+        checks = await asyncio.gather(
+            *(client.get(f"/transactions/{tx}") for tx in all_ids)
+        )
+        accepted = [tx for tx, r in zip(all_ids, checks) if r.status_code == 200]
+        print(f"accepted (server-side) : {len(accepted)}")
 
         print("\ndraining...")
         pending = list(accepted)

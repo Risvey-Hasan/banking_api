@@ -36,12 +36,21 @@ def verify(tx: str, aid: str) -> None:
     with httpx.Client(base_url=BASE, timeout=15.0) as client:
         t = client.get(f"/transactions/{tx}").json()
         a = client.get(f"/accounts/{aid}").json()
+        if "status" not in t:
+            print(f"{tx} -> not found")
+            return
     print(f"{tx} -> {t['status']}")
     print(f"balance      : {a['settled_balance']}  (1000.0000 - 250.75 = 749.2500)")
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 2 or sys.argv[1] not in ("setup", "verify"):
+        print(__doc__)
+        raise SystemExit(1)
     if sys.argv[1] == "setup":
         setup()
+    elif len(sys.argv) < 4:
+        print("usage: crash_check.py verify <transaction_id> <account_id>")
+        raise SystemExit(1)
     else:
         verify(sys.argv[2], sys.argv[3])

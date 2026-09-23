@@ -16,6 +16,13 @@ _ACCOUNT_TX = f"""
      LIMIT $2 OFFSET $3
 """
 
+_OPEN_ACCOUNT = """
+    INSERT INTO transactions
+        (transaction_id, kind, type, status, account_id, amount, currency,
+         device_id, client_ts, accepted_at, processed_at, next_attempt_at)
+    VALUES ($1, 'TRANSACTION', 'CREDIT', 'COMPLETED', $2, $3, $4,
+            'SYSTEM', now(), now(), now(), now())
+"""
 
 _ACCOUNT_VIEW = """
     SELECT a.id,
@@ -46,11 +53,21 @@ async def create_account(payload: AccountCreate) -> AccountOut:
                 {"currency": payload.currency},
             )
 
-        account_id = await conn.fetchval(
-            "INSERT INTO accounts (currency, balance) VALUES ($1, $2) RETURNING id",
-            payload.currency,
-            payload.initial_balance,
-        )
+        async with conn.transaction():
+            account_id = await conn.fetchval(
+                "INSERT INTO accounts (currency, balance) VALUES ($1, $2) RETURNING id",
+                payload.currency,
+                payload.initial_balance,
+            )
+            if payload.initial_balance > 0:
+                await conn.execute(
+                    _OPEN_ACCOUNT,
+                    f"OPEN-{account_id}",
+                    account_id,
+                    payload.initial_balance,
+                    payload.currency,
+                )
+
         row = await conn.fetchrow(_ACCOUNT_VIEW, account_id)
 
     return AccountOut(**dict(row))
