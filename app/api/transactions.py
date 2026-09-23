@@ -25,6 +25,14 @@ _INSERT = f"""
     RETURNING {_COLUMNS}
 """
 
+_INSERT_REVERSAL = f"""
+    INSERT INTO transactions
+        (transaction_id, kind, reverses_id, type, status)
+    VALUES ($1, 'REVERSAL', $2, 'CREDIT', 'PENDING')
+    ON CONFLICT (transaction_id) DO NOTHING
+    RETURNING {_COLUMNS}
+"""
+
 _SELECT = f"SELECT {_COLUMNS} FROM transactions WHERE transaction_id = $1"
 
 
@@ -72,6 +80,48 @@ async def create_transaction(
 
     if created:
         await queue.nudge(payload.transaction_id)
+    else:
+        response.status_code = status.HTTP_200_OK
+
+    return TransactionOut(**dict(row))
+
+
+@router.post(
+    "/{transaction_id}/reverse",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=TransactionOut,
+)
+async def reverse_transaction(transaction_id: str, response: Response) -> TransactionOut:
+    if transaction_id.startswith("REV-"):
+        raise AppError(
+            "NOT_REVERSIBLE",
+            "A reversal cannot itself be reversed",
+            status.HTTP_400_BAD_REQUEST,
+            {"transaction_id": transaction_id},
+        )
+
+    reversal_id = f"REV-{transaction_id}"
+
+    async with db.pool().acquire() as conn:
+        original_kind = await conn.fetchval(
+            "SELECT kind::text FROM transactions WHERE transaction_id = $1",
+            transaction_id,
+        )
+        if original_kind == "REVERSAL":
+            raise AppError(
+                "NOT_REVERSIBLE",
+                "A reversal cannot itself be reversed",
+                status.HTTP_400_BAD_REQUEST,
+                {"transaction_id": transaction_id},
+            )
+
+        row = await conn.fetchrow(_INSERT_REVERSAL, reversal_id, transaction_id)
+        created = row is not None
+        if not created:
+            row = await conn.fetchrow(_SELECT, reversal_id)
+
+    if created:
+        await queue.nudge(reversal_id)
     else:
         response.status_code = status.HTTP_200_OK
 

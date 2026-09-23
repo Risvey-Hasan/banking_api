@@ -8,7 +8,7 @@ import httpx
 
 BASE = "http://localhost:8000"
 N = 100
-AMOUNT = "10000.00"
+AMOUNT = "100.00"
 
 
 def payload(tx_id: str, account_id: int) -> dict:

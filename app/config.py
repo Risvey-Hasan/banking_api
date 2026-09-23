@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     worker_batch: int = 16
     worker_min_idle_ms: int = 30000
 
+    reversal_park_seconds: float = 0.25
+    reversal_park_horizon_hours: int = 24
+
     @property
     def _pg_credentials(self) -> str:
         return f"{quote_plus(self.postgres_user)}:{quote_plus(self.postgres_password)}"
