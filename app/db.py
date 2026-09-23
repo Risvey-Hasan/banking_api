@@ -1,12 +1,26 @@
 import asyncio
 import logging
 import asyncpg
+from contextlib import asynccontextmanager
 
 from app.config import settings
 
 log = logging.getLogger(__name__)
 
 _pool: asyncpg.Pool | None = None
+
+class DatabaseUnavailable(Exception):
+    """PostgreSQL cannot be reached right now."""
+
+
+_CONNECTIVITY = (
+    OSError,
+    asyncio.TimeoutError,
+    asyncpg.InterfaceError,
+    asyncpg.exceptions.PostgresConnectionError,
+    asyncpg.exceptions.CannotConnectNowError,
+    asyncpg.exceptions.TooManyConnectionsError,
+)
 
 
 async def connect() -> None:
@@ -37,6 +51,19 @@ def pool() -> asyncpg.Pool:
     if _pool is None:
         raise RuntimeError("postgres pool is not available")
     return _pool
+
+
+@asynccontextmanager
+async def acquire():
+    """Acquire a connection, translating connectivity failures into
+    DatabaseUnavailable so the API answers 503 rather than 500."""
+    if _pool is None:
+        raise DatabaseUnavailable("connection pool is not available")
+    try:
+        async with _pool.acquire() as conn:
+            yield conn
+    except _CONNECTIVITY as exc:
+        raise DatabaseUnavailable(str(exc)) from exc
 
 
 async def ping() -> bool:

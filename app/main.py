@@ -1,12 +1,17 @@
 import logging
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Response, status
+from fastapi.exceptions import RequestValidationError
 
 from app import db, redis_client
-
 from app.api import accounts, transactions
-from fastapi.exceptions import RequestValidationError
-from app.errors import AppError, app_error_handler, validation_error_handler
+from app.errors import (
+    AppError,
+    app_error_handler,
+    database_unavailable_handler,
+    validation_error_handler,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -28,6 +33,8 @@ app = FastAPI(
 
 app.add_exception_handler(AppError, app_error_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
+app.add_exception_handler(db.DatabaseUnavailable, database_unavailable_handler)
+
 app.include_router(accounts.router)
 app.include_router(transactions.router)
 

@@ -43,7 +43,7 @@ _SELECT = f"SELECT {_COLUMNS} FROM transactions WHERE transaction_id = $1"
 async def create_transaction(
     payload: TransactionCreate, response: Response
 ) -> TransactionOut:
-    async with db.pool().acquire() as conn:
+    async with db.acquire() as conn:
         account = await conn.fetchrow(
             "SELECT id, currency FROM accounts WHERE id = $1", payload.account_id
         )
@@ -106,7 +106,7 @@ async def reverse_transaction(transaction_id: str, response: Response) -> Transa
 
     reversal_id = f"REV-{transaction_id}"
 
-    async with db.pool().acquire() as conn:
+    async with db.acquire() as conn:
         original_kind = await conn.fetchval(
             "SELECT kind::text FROM transactions WHERE transaction_id = $1",
             transaction_id,
@@ -139,7 +139,7 @@ async def reverse_transaction(transaction_id: str, response: Response) -> Transa
 
 @router.get("/{transaction_id}", response_model=TransactionOut)
 async def get_transaction(transaction_id: str) -> TransactionOut:
-    async with db.pool().acquire() as conn:
+    async with db.acquire() as conn:
         row = await conn.fetchrow(_SELECT, transaction_id)
 
     if row is None:

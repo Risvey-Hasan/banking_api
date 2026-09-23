@@ -23,7 +23,7 @@ _ACCOUNT_VIEW = """
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=AccountOut)
 async def create_account(payload: AccountCreate) -> AccountOut:
-    async with db.pool().acquire() as conn:
+    async with db.acquire() as conn:
         known = await conn.fetchval(
             "SELECT code FROM currencies WHERE code = $1", payload.currency
         )
@@ -47,7 +47,7 @@ async def create_account(payload: AccountCreate) -> AccountOut:
 
 @router.get("/{account_id}", response_model=AccountOut)
 async def get_account(account_id: int) -> AccountOut:
-    async with db.pool().acquire() as conn:
+    async with db.acquire() as conn:
         row = await conn.fetchrow(_ACCOUNT_VIEW, account_id)
 
     if row is None:

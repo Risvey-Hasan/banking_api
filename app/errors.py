@@ -11,11 +11,13 @@ class AppError(Exception):
         message: str,
         status_code: int,
         details: dict | None = None,
+        headers: dict | None = None,
     ) -> None:
         self.code = code
         self.message = message
         self.status_code = status_code
         self.details = details or {}
+        self.headers = headers or {}
 
 
 def error_body(code: str, message: str, details: dict | None = None) -> dict:
@@ -26,6 +28,7 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=error_body(exc.code, exc.message, exc.details),
+        headers=exc.headers or None,
     )
 
 
@@ -39,4 +42,17 @@ async def validation_error_handler(
             "Request payload failed validation",
             {"errors": jsonable_encoder(exc.errors())},
         ),
+    )
+
+
+async def database_unavailable_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=error_body(
+            "SERVICE_UNAVAILABLE",
+            "The service cannot accept requests right now",
+        ),
+        headers={"Retry-After": "5"},
     )
