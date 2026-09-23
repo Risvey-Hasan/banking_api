@@ -42,10 +42,9 @@ async def _handle(entry_id: str, fields: dict) -> None:
             log.info("tx=%s no-op (already handled)", transaction_id)
         else:
             log.info("tx=%s -> %s", transaction_id, outcome)
-
-        if settings.crash_after_commit:
-            log.error("CRASH_AFTER_COMMIT: exiting before ack, tx=%s", transaction_id)
-            os._exit(1)
+            if settings.crash_after_commit:
+                log.error("CRASH_AFTER_COMMIT: exiting before ack, tx=%s", transaction_id)
+                os._exit(1)
 
     await redis_client.client().xack(
         settings.redis_stream, settings.redis_group, entry_id
