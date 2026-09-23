@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Response, status
 
 from app import db, queue
+from app.config import settings
 from app.errors import AppError
 from app.schemas import TransactionCreate, TransactionOut
 
@@ -18,17 +19,19 @@ _COLUMNS = """
 
 _INSERT = f"""
     INSERT INTO transactions
-        (transaction_id, kind, type, status,
-         account_id, amount, currency, device_id, client_ts)
-    VALUES ($1, 'TRANSACTION', $2::tx_type, 'PENDING', $3, $4, $5, $6, $7)
+        (transaction_id, kind, type, status, account_id, amount,
+         currency, device_id, client_ts, next_attempt_at)
+    VALUES ($1, 'TRANSACTION', $2::tx_type, 'PENDING', $3, $4, $5, $6, $7,
+            now() + make_interval(secs => $8))
     ON CONFLICT (transaction_id) DO NOTHING
     RETURNING {_COLUMNS}
 """
 
 _INSERT_REVERSAL = f"""
     INSERT INTO transactions
-        (transaction_id, kind, reverses_id, type, status)
-    VALUES ($1, 'REVERSAL', $2, 'CREDIT', 'PENDING')
+        (transaction_id, kind, reverses_id, type, status, next_attempt_at)
+    VALUES ($1, 'REVERSAL', $2, 'CREDIT', 'PENDING',
+            now() + make_interval(secs => $3))
     ON CONFLICT (transaction_id) DO NOTHING
     RETURNING {_COLUMNS}
 """
@@ -73,6 +76,7 @@ async def create_transaction(
             payload.currency,
             payload.device_id,
             payload.timestamp,
+            settings.accept_grace_seconds,
         )
         created = row is not None
         if not created:
@@ -115,7 +119,12 @@ async def reverse_transaction(transaction_id: str, response: Response) -> Transa
                 {"transaction_id": transaction_id},
             )
 
-        row = await conn.fetchrow(_INSERT_REVERSAL, reversal_id, transaction_id)
+        row = await conn.fetchrow(
+            _INSERT_REVERSAL,
+            reversal_id,
+            transaction_id,
+            settings.accept_grace_seconds,
+        )
         created = row is not None
         if not created:
             row = await conn.fetchrow(_SELECT, reversal_id)

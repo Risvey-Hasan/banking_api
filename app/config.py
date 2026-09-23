@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     reversal_park_seconds: float = 0.25
     reversal_park_horizon_hours: int = 24
 
+    accept_grace_seconds: float = 5.0
+    sweeper_batch: int = 500
+    sweeper_interval_seconds: float = 0.25
+    sweeper_redispatch_backoff_seconds: float = 5.0
+    sweeper_max_stream_len: int = 10_000
+
     @property
     def _pg_credentials(self) -> str:
         return f"{quote_plus(self.postgres_user)}:{quote_plus(self.postgres_password)}"
