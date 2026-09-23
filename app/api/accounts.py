@@ -1,10 +1,21 @@
-from fastapi import APIRouter, status
+from fastapi import APIRouter, status, Query
 
 from app import db
 from app.errors import AppError
-from app.schemas import AccountCreate, AccountOut
+from app.schemas import AccountCreate, AccountOut, TransactionOut
+from app.sql import TX_COLUMNS
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+
+_ACCOUNT_TX = f"""
+    SELECT {TX_COLUMNS}
+      FROM transactions
+     WHERE account_id = $1
+     ORDER BY accepted_at DESC
+     LIMIT $2 OFFSET $3
+"""
+
 
 _ACCOUNT_VIEW = """
     SELECT a.id,
@@ -59,3 +70,25 @@ async def get_account(account_id: int) -> AccountOut:
         )
 
     return AccountOut(**dict(row))
+
+
+@router.get("/{account_id}/transactions", response_model=list[TransactionOut])
+async def list_account_transactions(
+    account_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> list[TransactionOut]:
+    async with db.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM accounts WHERE id = $1", account_id
+        )
+        if exists is None:
+            raise AppError(
+                "ACCOUNT_NOT_FOUND",
+                f"Account {account_id} does not exist",
+                status.HTTP_404_NOT_FOUND,
+                {"account_id": account_id},
+            )
+        rows = await conn.fetch(_ACCOUNT_TX, account_id, limit, offset)
+
+    return [TransactionOut(**dict(r)) for r in rows]

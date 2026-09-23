@@ -3,19 +3,10 @@ from fastapi import APIRouter, Response, status
 from app import db, queue
 from app.config import settings
 from app.errors import AppError
+from app.sql import TX_COLUMNS
 from app.schemas import TransactionCreate, TransactionOut
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
-
-_COLUMNS = """
-    transaction_id,
-    kind::text   AS kind,
-    type::text   AS type,
-    status::text AS status,
-    reverses_id  AS reverses_transaction_id,
-    account_id, amount, currency, device_id,
-    accepted_at, processed_at, failed_attempts
-"""
 
 _INSERT = f"""
     INSERT INTO transactions
@@ -24,7 +15,7 @@ _INSERT = f"""
     VALUES ($1, 'TRANSACTION', $2::tx_type, 'PENDING', $3, $4, $5, $6, $7,
             now() + make_interval(secs => $8))
     ON CONFLICT (transaction_id) DO NOTHING
-    RETURNING {_COLUMNS}
+    RETURNING {TX_COLUMNS}
 """
 
 _INSERT_REVERSAL = f"""
@@ -33,10 +24,10 @@ _INSERT_REVERSAL = f"""
     VALUES ($1, 'REVERSAL', $2, 'CREDIT', 'PENDING',
             now() + make_interval(secs => $3))
     ON CONFLICT (transaction_id) DO NOTHING
-    RETURNING {_COLUMNS}
+    RETURNING {TX_COLUMNS}
 """
 
-_SELECT = f"SELECT {_COLUMNS} FROM transactions WHERE transaction_id = $1"
+_SELECT = f"SELECT {TX_COLUMNS} FROM transactions WHERE transaction_id = $1"
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=TransactionOut)

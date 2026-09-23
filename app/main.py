@@ -3,8 +3,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import PlainTextResponse
 
-from app import db, redis_client
+from app import db, redis_client, metrics
 from app.api import accounts, transactions
 from app.errors import (
     AppError,
@@ -57,3 +58,11 @@ async def health(response: Response) -> dict[str, str]:
         "postgres": "up" if pg_ok else "down",
         "redis": "up" if redis_ok else "down",
     }
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+async def metrics_endpoint() -> PlainTextResponse:
+    return PlainTextResponse(
+        await metrics.render(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
