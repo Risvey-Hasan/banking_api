@@ -14,6 +14,9 @@ class Settings(BaseSettings):
 
     redis_host: str = "localhost"
     redis_port: int = 6379
+    redis_stream: str = "transactions"
+    redis_group: str = "processors"
+    redis_stream_maxlen: int = 100_000
 
     pg_pool_min: int = 1
     pg_pool_max: int = 10

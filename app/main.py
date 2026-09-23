@@ -1,9 +1,12 @@
 import logging
 from contextlib import asynccontextmanager
-
 from fastapi import FastAPI, Response, status
 
 from app import db, redis_client
+
+from app.api import accounts, transactions
+from fastapi.exceptions import RequestValidationError
+from app.errors import AppError, app_error_handler, validation_error_handler
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,6 +25,11 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.add_exception_handler(AppError, app_error_handler)
+app.add_exception_handler(RequestValidationError, validation_error_handler)
+app.include_router(accounts.router)
+app.include_router(transactions.router)
 
 
 @app.get("/health")
