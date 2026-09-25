@@ -1,0 +1,26 @@
+# The seven packages this project actually chose, and why.
+#
+# NOT a build input -- nothing installs this file. requirements.txt is what
+# Docker reads, and it pins all 27 packages (these seven plus everything they
+# pull in) to exact versions. This file exists so the intent behind the stack
+# survives a regeneration of that one.
+#
+# fastapi            HTTP layer; gives request validation via pydantic for free.
+# uvicorn[standard]  ASGI server. The [standard] extra is uvloop + httptools,
+#                    both wanted: this service is I/O bound on PG and Redis.
+# pydantic           Request/response models, and Decimal handling for money.
+# pydantic-settings  Config from the environment, validated at startup, so a
+#                    missing or malformed setting fails the container rather
+#                    than surfacing as a runtime error under load.
+# asyncpg            PostgreSQL driver. Chosen over psycopg so the app and
+#                    Alembic share ONE driver -- see decision log D3.
+# redis              Streams client for the dispatch queue.
+# alembic            Schema migrations, run as a one-shot compose service.
+
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+asyncpg
+redis
+alembic
