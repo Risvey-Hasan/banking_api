@@ -1,0 +1,15 @@
+# Dev-only dependencies: the test suite and the load generator's HTTP client.
+# Installed in the loadtest image and in the local venv; NOT in the api/worker
+# image, which stays minimal.
+#
+# Direct packages only, pinned exactly. Their transitives are deliberately NOT
+# pinned here: loadtest/Dockerfile installs this file together with
+# requirements.txt in one pip invocation, and anyio / idna / h11 appear in both
+# dependency trees. Pinning them twice creates two constraints on one package
+# that must agree forever. They are pinned once, in requirements.txt.
+#
+# Regenerate with:  pip freeze   (in the venv that runs pytest)
+
+httpx==0.28.1
+pytest==9.1.1
+pytest-asyncio==1.4.0

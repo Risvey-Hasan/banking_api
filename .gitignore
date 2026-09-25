@@ -23,6 +23,3 @@ desktop.ini
 
 # Load test artefacts
 loadtest/results/
-
-# Development tools
-requirements-dev.txt
