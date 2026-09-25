@@ -4,6 +4,7 @@ services:
   postgres:
     image: postgres:17-alpine
     container_name: txnsvc-postgres
+    command: [ "postgres", "-c", "max_connections=200" ]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -39,7 +40,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: txnsvc-api
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000",
+               "--workers", "${API_WORKERS:-2}" ]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -48,8 +50,9 @@ services:
       POSTGRES_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      PG_POOL_MAX: ${API_PG_POOL_MAX:-5}
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "8000-8002:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,14 +60,7 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-
-    healthcheck:
-      test: [ "CMD", "python", "-c",
-              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+    restart: unless-stopped
 
   migrate:
     build:
@@ -94,6 +90,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      PG_POOL_MAX: ${WORKER_PG_POOL_MAX:-5}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       CRASH_AFTER_COMMIT: "${CRASH_AFTER_COMMIT:-false}"
@@ -117,6 +114,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      PG_POOL_MAX: 2
       REDIS_HOST: redis
       REDIS_PORT: 6379
     depends_on:
@@ -127,6 +125,21 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+
+  loadgen:
+    build:
+      context: .
+      dockerfile: loadtest/Dockerfile
+    profiles: [ "loadtest" ]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      LOADTEST_BASES: "http://api:8000"
 
 volumes:
   pgdata:

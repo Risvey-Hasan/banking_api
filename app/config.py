@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     sweeper_batch: int = 500
     sweeper_interval_seconds: float = 0.25
     sweeper_redispatch_backoff_seconds: float = 5.0
-    sweeper_max_stream_len: int = 10_000
+    sweeper_max_queue_depth: int = 10_000
 
     @property
     def _pg_credentials(self) -> str:

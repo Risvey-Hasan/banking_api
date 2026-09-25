@@ -26,12 +26,36 @@ _CLAIM_DUE = """
 """
 
 
+async def _queue_depth(client) -> int:
+    """Work Redis still owes the workers: entries not yet delivered to the
+    group (its lag) plus entries delivered but not acknowledged (the PEL).
+
+    Deliberately NOT XLEN. The stream retains acknowledged entries up to
+    MAXLEN, so XLEN measures history rather than depth -- using it here left
+    the sweeper permanently disabled after any burst of traffic, silently
+    removing the recovery path that sections 8 and 10 depend on.
+    """
+    depth = 0
+    try:
+        info = await client.xpending(settings.redis_stream, settings.redis_group)
+        depth += info["pending"] if isinstance(info, dict) else 0
+    except Exception:
+        log.debug("xpending unavailable", exc_info=True)
+    try:
+        for group in await client.xinfo_groups(settings.redis_stream):
+            if group.get("name") == settings.redis_group:
+                depth += group.get("lag") or 0
+    except Exception:
+        log.debug("xinfo_groups unavailable", exc_info=True)
+    return depth
+
+
 async def _sweep_once() -> int:
     client = redis_client.client()
 
-    depth = await client.xlen(settings.redis_stream)
-    if depth > settings.sweeper_max_stream_len:
-        log.info("backpressure: stream depth %d, skipping sweep", depth)
+    depth = await _queue_depth(client)
+    if depth > settings.sweeper_max_queue_depth:
+        log.info("backpressure: queue depth %d, skipping sweep", depth)
         return 0
 
     async with db.pool().acquire() as conn:
