@@ -1,0 +1,43 @@
+# Pinned to the exact versions that the test suite and the recorded benchmark
+# ran on. A reviewer who clones this repo builds the same image we measured.
+#
+# Regenerate with:  docker compose exec api pip freeze
+#
+# The two groups below are a reading aid, not a pip feature. pip treats every
+# line identically; the split records which packages were chosen and which
+# arrived as somebody else's dependency.
+
+# --- Direct dependencies: chosen deliberately ---
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+asyncpg==0.31.0
+redis==8.1.0
+alembic==1.20.0
+
+# --- Transitive: pulled in by the above, pinned only for reproducibility ---
+# starlette                <- fastapi
+# SQLAlchemy, Mako, MarkupSafe, greenlet   <- alembic
+# httptools, uvloop, watchfiles, websockets, python-dotenv  <- uvicorn[standard]
+# pydantic_core, annotated-types, annotated-doc, typing-inspection <- pydantic
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+click==8.5.0
+greenlet==3.5.6
+h11==0.16.0
+httptools==0.8.0
+idna==3.20
+Mako==1.4.3
+MarkupSafe==3.0.3
+pydantic_core==2.46.5
+python-dotenv==1.2.3
+PyYAML==6.0.3
+SQLAlchemy==2.0.54
+starlette==1.6.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvloop==0.22.1
+watchfiles==1.3.0
+websockets==17.1
