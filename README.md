@@ -10,6 +10,10 @@ surface is small; the design work is in the seams between the components.
 
 **Stack:** Python 3.13, FastAPI, PostgreSQL 17, Redis 7, Docker Compose.
 
+**Design record:** [`docs/DESIGN.md`](docs/DESIGN.md) — the design as argued before any code
+was written, with a numbered decision log (D1–D11) giving the alternatives that were rejected
+and why. This README says what the system does; that document says why it is shaped this way.
+
 ---
 
 ## Getting started
