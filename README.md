@@ -12,39 +12,221 @@ surface is small; the design work is in the seams between the components.
 
 ---
 
-## Quick start
+## Getting started
+
+Everything below is copy-pasteable. Commands are shown for bash; where Windows
+PowerShell differs, the PowerShell form follows on the next line.
+
+### Prerequisites
+
+| | |
+| --- | --- |
+| Docker | Docker Desktop, or Docker Engine with Compose v2 |
+| Git | any recent version |
+| Python 3.13 | **only** to run the tests, scripts and load generator from the host. Not needed to run the service. |
+
+Host ports **8000** (API), **5433** (PostgreSQL) and **6379** (Redis) must be free.
+PostgreSQL is deliberately published on 5433 rather than 5432 so the stack cannot
+collide with a PostgreSQL already installed on the host — a collision that
+presents as an authentication failure rather than a port error, which is a
+confusing hour if you do not know to look for it.
+
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/Risvey-Hasan/banking_api.git
+cd banking_api
+cp .env.example .env
+```
+
+```powershell
+Copy-Item .env.example .env
+```
+
+**Copy the file, do not retype it.** `.env.example` is normalised to LF by
+`.gitattributes`; a CRLF `.env` is parsed differently by Docker Compose and by
+Python's dotenv reader, and the resulting failure looks like a wrong password.
+
+The shipped `POSTGRES_PASSWORD` is a local-development value. It must be
+non-empty: the postgres image refuses to initialise a fresh data directory
+without one.
+
+### 2. Start the stack
 
 ```bash
 docker compose up --build
 ```
 
-That starts PostgreSQL, Redis, runs migrations to completion, then starts the API,
-the worker and the sweeper. No manual table creation is required.
+That single command brings up everything, in dependency order:
 
-To run several API instances and workers, which is how the concurrency and
-idempotency guarantees are meant to be exercised:
+1. **postgres** and **redis**, both gated on healthchecks
+2. **migrate** — runs `alembic upgrade head` to completion and exits 0
+3. **api** (uvicorn, 2 worker processes), **two worker containers**, **sweeper**
+
+No manual table creation, no seed step, no ordering for you to get right. The
+`migrate` service exists so that schema creation is a one-shot job with an exit
+code rather than something the API does on startup — an API that migrates on boot
+races itself when you run more than one instance of it.
+
+Detached, which is what you want for everything that follows:
 
 ```bash
-docker compose up -d --build --scale api=3 --scale worker=3
+docker compose up --build -d
+docker compose ps
 ```
 
-API instances are published on host ports **8000–8002**. PostgreSQL is published on
-**5433** rather than 5432, deliberately, so the stack does not collide with a
-PostgreSQL already installed on the host.
+Expected: `postgres` and `redis` healthy, `migrate` **Exited (0)**, and
+`txnsvc-api-1`, `txnsvc-worker-1`, `txnsvc-worker-2`, `txnsvc-sweeper-1` up. Two
+workers by default is deliberate — sections 5 and 16 of the task require
+correctness across independent workers, so the default stack demonstrates it
+rather than requiring a flag.
 
-Verify:
+### 3. Verify
 
 ```bash
 curl http://localhost:8000/health
 curl http://localhost:8000/metrics
 ```
 
+`/health` reports `healthy`, `degraded` (Redis unreachable — the service still
+accepts work) or `unhealthy` (PostgreSQL unreachable — the service refuses it).
 Interactive OpenAPI documentation is at **http://localhost:8000/docs**.
 
-Configuration comes from `.env`; copy `.env.example` and set a password. Copying
-rather than retyping matters — `.env.example` is tracked by Git and normalised to
-LF line endings, and a CRLF `.env` is parsed differently by Docker Compose and by
-Python's dotenv reader.
+A one-command smoke test of the happy path and the error contract:
+
+```bash
+python scripts/smoke.py
+```
+
+### 4. Run the automated tests
+
+Two ways. Both need the stack from step 2 already running.
+
+**In Docker — no Python on the host:**
+
+```bash
+docker compose --profile test run --rm tests
+```
+
+This builds a test image, joins the compose network and runs
+`pytest -v -m "not slow"`. The `not slow` is not a convenience: the excluded test
+(`test_worker_killed_mid_flight_loses_nothing`) kills a worker *container* by
+driving `docker compose` itself, and this container has no Docker socket. Run that
+one from the host.
+
+**From the host — the full suite including the crash test:**
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -v
+```
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -v
+```
+
+**Both** requirements files are needed. The tests assert against PostgreSQL
+directly with `asyncpg` (a runtime dependency) as well as over HTTP with `httpx`
+(a dev dependency) — because a service must not be the only witness to its own
+correctness.
+
+```bash
+pytest -v                  # 25 tests, including the container-killing one
+pytest -v -m "not slow"    # 24 tests, no container manipulation
+```
+
+The suite talks to the service over real HTTP rather than through an in-process
+test client, and asserts the ledger invariant once after the whole run. Point it
+elsewhere with `TXNSVC_API=http://host:port`.
+
+### 5. Reproduce the failure demonstrations
+
+Each script proves one numbered requirement and prints PASS/FAIL. Run them from
+the host with the venv active:
+
+```bash
+python scripts/duplicate_hammer.py        # §5  1000 concurrent duplicates -> one effect
+python scripts/multi_instance_hammer.py   # §5  the same across 3 API containers
+python scripts/concurrency_check.py       # §6  100 concurrent debits -> exactly 0.0000
+python scripts/apply_check.py             # §5  redelivery causes no second effect
+python scripts/out_of_order_check.py      # §8  the five-message sequence -> net 0
+python scripts/redis_outage_check.py      # §10 Redis stopped and restored, nothing lost
+python scripts/postgres_outage_check.py   # §10 503s, and no false acceptance
+python scripts/pg_waits.py --seconds 30   #     where PostgreSQL's time goes under load
+```
+
+`multi_instance_hammer.py` needs three API containers, which is an explicit
+opt-in because it requires a port range:
+
+```bash
+API_PORTS=8000-8002 docker compose up --build -d --scale api=3
+docker compose ps          # read the assigned 8000/8001/8002 mapping
+```
+
+```powershell
+$env:API_PORTS = "8000-8002"
+docker compose up --build -d --scale api=3
+```
+
+The base compose file publishes the API on **one fixed port** on purpose. A port
+range lets Docker choose, and an API that lands on 8001 breaks every hardcoded
+URL in this repository — intermittently, which is worse than breaking outright.
+
+The §7 crash demonstration is deliberately manual, because a reviewer will want to
+watch it happen. It is described in **Testing → Reproducing the failure
+demonstrations** below.
+
+### 6. Run the load test
+
+**In Docker** (recommended — the generator is CPU-hungry and this keeps it off
+the host's network stack):
+
+```bash
+docker compose --profile loadtest run --rm loadgen \
+    python -m loadtest.run --rate 1000 --duration 60 --accounts 200
+```
+
+**From the host:**
+
+```bash
+python -m loadtest.run --rate 1000 --duration 60 --accounts 200
+```
+
+The generator is **open-loop**: it offers `--rate` requests per second on 100 ms
+ticks regardless of how fast the service answers, and records its own scheduling
+lag so you can tell whether the harness kept up. A closed-loop generator that
+waits for each response measures the service and the harness together and cannot
+separate them.
+
+| flag | default | |
+| --- | --- | --- |
+| `--rate` | 1000 | offered requests/second |
+| `--duration` | 60 | seconds |
+| `--accounts` | 200 | distinct accounts; `--accounts 1` makes one hot row |
+| `--processes` | 4 | generator processes — one Python process saturates a core near 200 rps |
+| `--concurrency` | 50 | in-flight requests per process |
+| `--label` | none | names the report file |
+
+It discovers live API instances by probing `/health`, writes a JSON report to
+`loadtest/results/`, and reports throughput, P50/P95/P99 latency, error rate,
+queue backlog, worker processing delay and the ledger-mismatch count. Measured
+results are in **Benchmark results** below.
+
+### 7. Stop
+
+```bash
+docker compose down        # keep the data
+docker compose down -v     # also delete the PostgreSQL and Redis volumes
+```
+
+Use `-v` between benchmark runs. Table size and cache state change throughput, so
+comparing a run on a warm database against one on a cold database measures the
+database's history rather than your change.
 
 ---
 
@@ -623,11 +805,14 @@ a wrong number on a statement.
 
 ## Testing
 
+See **Getting started → step 4** for setup. In short:
+
 ```bash
-docker compose up -d --build --scale api=3 --scale worker=3
-pip install -r requirements-dev.txt
-pytest -v                 # everything
-pytest -v -m "not slow"   # skips the container-killing test
+docker compose up --build -d                     # the stack
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -v                                        # everything
+pytest -v -m "not slow"                          # skips the container-killing test
+docker compose --profile test run --rm tests      # or: no host Python at all
 ```
 
 Run from the project root. Tests execute over real HTTP against the running stack —

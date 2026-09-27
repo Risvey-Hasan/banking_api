@@ -1,3 +1,4 @@
+import os
 import asyncio
 from collections import Counter
 from decimal import Decimal
@@ -6,7 +7,9 @@ import httpx
 
 from tests.helpers import new_id, payload, settled, wait_for_terminal
 
-API = "http://localhost:8000"
+# Overridable so the suite can run from the host (default) or from inside
+# the compose network (TXNSVC_API=http://api:8000).
+API = os.environ.get("TXNSVC_API", "http://localhost:8000")
 LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=100)
 
 

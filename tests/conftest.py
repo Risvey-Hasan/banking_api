@@ -1,3 +1,4 @@
+import os
 import asyncio
 
 import asyncpg
@@ -8,7 +9,9 @@ import pytest_asyncio
 from app.config import settings
 from app import metrics
 
-API = "http://localhost:8000"
+# Overridable so the suite can run from the host (default) or from inside
+# the compose network (TXNSVC_API=http://api:8000).
+API = os.environ.get("TXNSVC_API", "http://localhost:8000")
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)

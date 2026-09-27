@@ -12,5 +12,9 @@ RUN pip install -r requirements.txt -r requirements-dev.txt
 
 COPY app ./app
 COPY loadtest ./loadtest
+# The suite ships in this image too, so the tests can be run with
+# no Python on the host. See the 'tests' service in compose.
+COPY tests ./tests
+COPY pytest.ini .
 
 CMD ["python", "-m", "loadtest.run"]

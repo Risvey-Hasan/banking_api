@@ -4,7 +4,19 @@ services:
   postgres:
     image: postgres:17-alpine
     container_name: txnsvc-postgres
-    command: [ "postgres", "-c", "max_connections=200" ]
+    # max_connections: 200 concurrent load-test connections plus pools.
+    # The three knobs below are measurement/tuning levers, OFF by default so
+    # the shipped configuration is the one the README reports numbers for.
+    #   PG_TRACK_WAL_IO=on   populates pg_stat_wal timing (scripts/pg_waits.py)
+    #   PG_COMMIT_DELAY      group commit: microseconds the first committer
+    #                        waits so concurrent commits share one fsync.
+    #                        Durability is UNCHANGED -- every transaction
+    #                        still flushes WAL before its commit returns.
+    command: [ "postgres",
+               "-c", "max_connections=200",
+               "-c", "track_wal_io_timing=${PG_TRACK_WAL_IO:-off}",
+               "-c", "commit_delay=${PG_COMMIT_DELAY:-0}",
+               "-c", "commit_siblings=${PG_COMMIT_SIBLINGS:-5}" ]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -52,7 +64,14 @@ services:
       REDIS_PORT: 6379
       PG_POOL_MAX: ${API_PG_POOL_MAX:-5}
     ports:
-      - "8000-8002:8000"
+      # ONE fixed host port by default, not a range. A range ("8000-8002:8000")
+      # lets Docker choose, so the README's localhost:8000 and every hardcoded
+      # BASE in scripts/ and tests/ break intermittently -- worse than breaking
+      # outright, because it looks like a flaky service.
+      #
+      # Scaling the API needs a range, so it is an explicit opt-in:
+      #   API_PORTS=8000-8002 docker compose up -d --scale api=3
+      - "${API_PORTS:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,6 +103,11 @@ services:
       context: .
       dockerfile: Dockerfile
     command: [ "python", "-m", "app.worker.main" ]
+    # Two independent worker CONTAINERS, so `docker compose up --build`
+    # demonstrates sections 5 and 16 without manual scaling. The claim-and-
+    # apply CAS is what makes this safe; see design decision D4.
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -140,6 +164,34 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       LOADTEST_BASES: "http://api:8000"
+
+  # Runs the pytest suite from inside the compose network, so a reviewer needs
+  # no Python on the host:
+  #
+  #   docker compose --profile test run --rm tests
+  #
+  # -m "not slow" is not optional here. test_worker_killed_mid_flight drives
+  # `docker compose` itself to kill a worker container, and this container has
+  # no Docker CLI and no Docker socket. That one test needs a host with Docker
+  # available:  pytest -v   (from the host, with the venv installed).
+  tests:
+    build:
+      context: .
+      dockerfile: loadtest/Dockerfile
+    profiles: [ "test" ]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TXNSVC_API: "http://api:8000"
+    command: [ "pytest", "-v", "-m", "not slow" ]
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   pgdata:
