@@ -4,6 +4,7 @@ TX_COLUMNS = """
     type::text   AS type,
     status::text AS status,
     reverses_id  AS reverses_transaction_id,
+    reverses_type::text AS reverses_type,
     account_id, amount, currency, device_id,
     accepted_at, processed_at, failed_attempts
 """

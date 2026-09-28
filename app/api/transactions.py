@@ -18,10 +18,14 @@ _INSERT = f"""
     RETURNING {TX_COLUMNS}
 """
 
+# No `type`. The compensating direction is the OPPOSITE of the transaction
+# being reversed, and section 8 requires accepting a reversal before its
+# original exists -- so at this point the direction is genuinely unknown. The
+# worker writes it, with the direction it opposed, when the reversal settles.
 _INSERT_REVERSAL = f"""
     INSERT INTO transactions
-        (transaction_id, kind, reverses_id, type, status, next_attempt_at)
-    VALUES ($1, 'REVERSAL', $2, 'CREDIT', 'PENDING',
+        (transaction_id, kind, reverses_id, status, next_attempt_at)
+    VALUES ($1, 'REVERSAL', $2, 'PENDING',
             now() + make_interval(secs => $3))
     ON CONFLICT (transaction_id) DO NOTHING
     RETURNING {TX_COLUMNS}

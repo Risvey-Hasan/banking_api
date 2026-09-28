@@ -36,20 +36,36 @@ _FINALISE = """
      WHERE transaction_id = $1
 """
 
-# The reversal's claim on its original: answers "has it landed?" and
-# "have I already reversed it?" in one atomic statement.
+# Locked for the remainder of this database transaction, BEFORE any balance
+# changes. A reversal that turns out to be unable to complete must leave the
+# original's status untouched, because a row marked REVERSED has to mean the
+# money actually came back. Lock order is reversal row (the claim) -> original
+# row -> account row; the original's own apply path takes original -> account,
+# so no cycle exists.
+_ORIGINAL_FOR_REVERSAL = """
+    SELECT status::text AS status, type::text AS type,
+           account_id, amount, currency
+      FROM transactions
+     WHERE transaction_id = $1
+       FOR UPDATE
+"""
+
 _MARK_REVERSED = """
     UPDATE transactions
        SET status = 'REVERSED'
      WHERE transaction_id = $1
        AND status = 'COMPLETED'
-    RETURNING account_id, amount, currency
+    RETURNING transaction_id
 """
 
+# The reversal learns, at settle time, both the direction it moved money and
+# the direction it opposed. CHECK reversal_compensates then enforces that they
+# differ -- see decision D12.
 _SETTLE_REVERSAL = """
     UPDATE transactions
        SET status = 'COMPLETED', processed_at = now(),
-           account_id = $2, amount = $3, currency = $4
+           account_id = $2, amount = $3, currency = $4,
+           type = $5::tx_type, reverses_type = $6::tx_type
      WHERE transaction_id = $1
 """
 
@@ -57,11 +73,14 @@ _PARK = """
     UPDATE transactions
        SET status = 'PENDING',
            parked_since = COALESCE(parked_since, now()),
-           next_attempt_at = now() + make_interval(secs => $2)
+           next_attempt_at = now() + make_interval(secs => $2),
+           last_error = $3
      WHERE transaction_id = $1
 """
 
-_STATUS_OF = "SELECT status::text FROM transactions WHERE transaction_id = $1"
+# A reversal compensates; it does not repeat. This mapping is the entire rule,
+# and the schema refuses to store a reversal that disagrees with it.
+_COMPENSATION = {"DEBIT": "CREDIT", "CREDIT": "DEBIT"}
 
 
 async def apply_transaction(conn: asyncpg.Connection, transaction_id: str) -> str | None:
@@ -90,30 +109,77 @@ async def _apply_original(conn: asyncpg.Connection, claimed) -> str:
 
 
 async def _apply_reversal(conn: asyncpg.Connection, claimed) -> str:
+    """Compensate the transaction this reversal targets.
+
+    The direction is derived from the original, never assumed: reversing a
+    DEBIT credits the account, reversing a CREDIT debits it. Getting this wrong
+    in the other direction created money -- see decision D12.
+    """
     tx = claimed["transaction_id"]
     target = claimed["reverses_id"]
 
-    original = await conn.fetchrow(_MARK_REVERSED, target)
+    original = await conn.fetchrow(_ORIGINAL_FOR_REVERSAL, target)
 
-    if original is None:
-        state = await conn.fetchval(_STATUS_OF, target)
+    if original is None or original["status"] != "COMPLETED":
+        return await _cannot_settle_yet(conn, claimed, original)
 
-        if state in ("REJECTED", "NOT_APPLICABLE"):
-            await conn.execute(_FINALISE, tx, "NOT_APPLICABLE", "ORIGINAL_NEVER_APPLIED")
-            return "NOT_APPLICABLE"
+    direction = _COMPENSATION[original["type"]]
+    account_id, amount = original["account_id"], original["amount"]
 
-        parked_since = claimed["parked_since"]
-        horizon = timedelta(hours=settings.reversal_park_horizon_hours)
-        if parked_since and datetime.now(timezone.utc) - parked_since > horizon:
-            await conn.execute(_FINALISE, tx, "DEAD_LETTER", "ORIGINAL_NEVER_ARRIVED")
-            return "DEAD_LETTER"
+    if direction == "DEBIT":
+        # Reversing a credit claws money back, so it is guarded exactly like an
+        # ordinary debit. Invariant I2 -- no negative balance -- outranks the
+        # reversal: if the money has since been spent, the reversal waits
+        # rather than overdrawing the account.
+        if await conn.fetchval(_DEBIT, account_id, amount) is None:
+            return await _park_or_dead_letter(
+                conn, claimed,
+                "REVERSAL_FUNDS_UNAVAILABLE",
+                "REVERSAL_FUNDS_NEVER_AVAILABLE",
+            )
+    else:
+        await conn.fetchval(_CREDIT, account_id, amount)
 
-        await conn.execute(_PARK, tx, settings.reversal_park_seconds)
-        return "PARKED"
-
-    await conn.fetchval(_CREDIT, original["account_id"], original["amount"])
+    # Only now, with the compensation actually applied, does the original
+    # become REVERSED. Everything below is in the same transaction as the
+    # balance change above, so the two cannot disagree.
+    await conn.execute(_MARK_REVERSED, target)
     await conn.execute(
         _SETTLE_REVERSAL, tx,
-        original["account_id"], original["amount"], original["currency"],
+        account_id, amount, original["currency"],
+        direction, original["type"],
     )
     return "COMPLETED"
+
+
+async def _cannot_settle_yet(conn: asyncpg.Connection, claimed, original) -> str:
+    """The original has not applied. It may never, or it may not have arrived."""
+    tx = claimed["transaction_id"]
+    state = original["status"] if original is not None else None
+
+    if state in ("REJECTED", "NOT_APPLICABLE"):
+        await conn.execute(_FINALISE, tx, "NOT_APPLICABLE", "ORIGINAL_NEVER_APPLIED")
+        return "NOT_APPLICABLE"
+
+    return await _park_or_dead_letter(
+        conn, claimed, "ORIGINAL_NOT_YET_APPLIED", "ORIGINAL_NEVER_ARRIVED"
+    )
+
+
+async def _park_or_dead_letter(conn: asyncpg.Connection, claimed,
+                               park_reason: str, dead_reason: str) -> str:
+    """Retry for a bounded time, then hand the problem to a human.
+
+    `parked_since` is set once and never reset, so the horizon bounds the total
+    time a reversal spends waiting, whatever it is waiting for.
+    """
+    tx = claimed["transaction_id"]
+    parked_since = claimed["parked_since"]
+    horizon = timedelta(hours=settings.reversal_park_horizon_hours)
+
+    if parked_since and datetime.now(timezone.utc) - parked_since > horizon:
+        await conn.execute(_FINALISE, tx, "DEAD_LETTER", dead_reason)
+        return "DEAD_LETTER"
+
+    await conn.execute(_PARK, tx, settings.reversal_park_seconds, park_reason)
+    return "PARKED"

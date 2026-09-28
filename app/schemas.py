@@ -41,9 +41,14 @@ class TransactionCreate(BaseModel):
 class TransactionOut(BaseModel):
     transaction_id: str
     kind: str
-    type: str
+    # Nullable for a reversal that has not settled. The compensating direction
+    # is the opposite of the transaction being reversed, and a reversal may be
+    # accepted before that transaction exists -- so the direction is unknown
+    # until it settles. See decision D12.
+    type: str | None = None
     status: str
     reverses_transaction_id: str | None = None
+    reverses_type: str | None = None
     account_id: int | None = None
     amount: Decimal | None = None
     currency: str | None = None

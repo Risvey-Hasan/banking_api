@@ -102,6 +102,34 @@ A one-command smoke test of the happy path and the error contract:
 python scripts/smoke.py
 ```
 
+### If `migrate` exits 1 with `InvalidPasswordError`
+
+```
+FATAL: password authentication failed for user "txnsvc"
+DETAIL: Connection matched ... "host all all all scram-sha-256"
+```
+
+You have a PostgreSQL volume left over from an earlier run of this stack, initialised
+with a different password. `POSTGRES_PASSWORD` is an **initialisation** parameter: the
+postgres image reads it once, when `initdb` runs against an empty data directory, and
+ignores it forever after. The password then lives inside the database, not in the
+environment.
+
+Removing containers and images does not help — volumes outlive both, by design. Delete
+them explicitly:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+A successful fresh start prints `Volume txnsvc_pgdata Created`. If it does not, the old
+volume is still in use. This stack sets `name: txnsvc` in `docker-compose.yml`, so its
+identity is the project name rather than the directory — a second clone elsewhere on the
+same machine adopts the same volumes. That is a deliberate trade for stable container
+names (`txnsvc-postgres`, which the scripts and log instructions rely on) and it is
+listed under **Known limitations**.
+
 ### 4. Run the automated tests
 
 Two ways. Both need the stack from step 2 already running.
@@ -140,8 +168,8 @@ directly with `asyncpg` (a runtime dependency) as well as over HTTP with `httpx`
 correctness.
 
 ```bash
-pytest -v                  # 25 tests, including the container-killing one
-pytest -v -m "not slow"    # 24 tests, no container manipulation
+pytest -v                  # 29 tests, including the container-killing one
+pytest -v -m "not slow"    # 28 tests, no container manipulation
 ```
 
 The suite talks to the service over real HTTP rather than through an in-process
@@ -458,7 +486,7 @@ the next debit is `REJECTED`.
 | **Accept** | one statement, no explicit transaction | a single `INSERT` is atomic by itself, and *is* the durable-accept boundary. An explicit transaction would cost two round trips on the hottest path for nothing. |
 | **Account creation** | one transaction: `accounts` row + genesis credit | an account can never exist holding money the ledger cannot explain |
 | **Apply** | one transaction: claim → move money → finalise | the whole reason crash recovery is free |
-| **Reversal apply** | one transaction: claim reversal → mark original `REVERSED` → credit → settle reversal | once `REV-{id}` is `COMPLETED`, the original is necessarily `REVERSED`; there is no window between them |
+| **Reversal apply** | one transaction: claim reversal → lock original → **move money** → mark original `REVERSED` → settle reversal | once `REV-{id}` is `COMPLETED`, the original is necessarily `REVERSED`, with no window between them. The order inside the transaction matters: the compensation is applied *before* the status changes, so a reversal that cannot complete leaves the original `COMPLETED`. A row marked `REVERSED` must mean the money actually came back. |
 | **Sweeper** | one statement per batch | select-and-reschedule cannot be split |
 
 The apply transaction is the whole correctness argument, and it is about twenty
@@ -564,9 +592,12 @@ CREATE TABLE transactions (
     transaction_id  TEXT PRIMARY KEY,
     kind            tx_kind   NOT NULL DEFAULT 'TRANSACTION',   -- TRANSACTION | REVERSAL
     reverses_id     TEXT,                                       -- no FK; see below
-    type            tx_type   NOT NULL,                         -- DEBIT | CREDIT
+    type            tx_type,                          -- DEBIT | CREDIT; NULL until
+                                                      -- a reversal settles (D12)
     status          tx_status NOT NULL DEFAULT 'PENDING',
 
+    reverses_type   tx_type,                          -- the direction a reversal
+                                                      -- opposed; must differ (D12)
     account_id      BIGINT REFERENCES accounts(id),   -- NULL on a parked reversal
     amount          NUMERIC(20,4) CHECK (amount > 0), -- NULL on a parked reversal
     currency        CHAR(3) REFERENCES currencies(code),
@@ -645,6 +676,18 @@ Three rules:
   moved, so there is nothing to give back. Miss this and the reversal parks
   forever and dead-letters, which looks like a bug.
 - **A reversal cannot be reversed.** `POST /transactions/REV-X/reverse` → `400`.
+- **A reversal compensates in the opposite direction, derived from the original.**
+  Reversing a `DEBIT` credits the account; reversing a `CREDIT` debits it. The
+  direction is read from the original at settle time, never assumed, and the
+  reversal row records both its own direction and the one it opposed so that
+  `CHECK (type <> reverses_type)` can enforce it. A reversal is therefore the one
+  row whose `type` is `NULL` while it waits — §8 requires accepting a reversal
+  before its original exists, so the direction is genuinely unknown until then.
+- **A compensating debit is guarded like any other debit.** If the credited money
+  has since been spent, the reversal parks and retries rather than overdrawing the
+  account, and dead-letters at the horizon with `REVERSAL_FUNDS_UNAVAILABLE`.
+  Invariant I2 outranks the reversal: breaking "no negative balance" to satisfy a
+  reversal would trade the more fundamental promise for the less.
   Otherwise the system produces `REV-REV-X` and an infinite regress with real
   money in it.
 
@@ -678,7 +721,8 @@ database directly, with no API involved (`tests/test_constraints.py`).
 | `original_is_complete` | an ordinary transaction accepted with no account or amount | I3 |
 | `settled_is_complete` | any row reaching `COMPLETED`/`REVERSED` without knowing what it settled | I1, I5 |
 | `reversal_has_target` | a reversal with no target, or an original carrying one | I5 |
-| `reversal_only_credits` | a reversal that debits rather than compensates | I5 |
+| `reversal_compensates` | a settled reversal that moves money the **same** way as the transaction it reverses — which would apply that transaction's effect twice, creating money. Replaced `reversal_only_credits`, which required every reversal to be a `CREDIT` and therefore *mandated* the bug. See `docs/DESIGN.md` **D12**. | I1, I5 |
+| `reverses_type_only_on_reversals` | an ordinary transaction claiming to oppose a direction | I5 |
 
 ```sql
 -- Available balance: a few page reads instead of a table scan.
@@ -832,9 +876,11 @@ assumption this design refuses to make.
 | concurrent duplicate transactions | `::test_thousand_concurrent_duplicates_apply_once` |
 | reversal | `test_reversals.py::test_reversal_restores_the_balance` |
 | duplicate reversal | `::test_duplicate_reversal_credits_once` |
+| reversing a credit debits (D12 regression) | `::test_reversing_a_credit_debits_and_creates_no_money` |
+| a reversal never overdraws | `::test_reversing_a_credit_waits_rather_than_overdrawing` |
 | out-of-order events | `::test_out_of_order_converges_to_zero_effect` |
 | worker retry / recovery | `test_recovery.py::test_redelivered_entry_is_a_noop`, `::test_worker_killed_mid_flight_loses_nothing` |
-| database constraints | `test_constraints.py` (8 tests, direct SQL) |
+| database constraints | `test_constraints.py` (10 tests, direct SQL) |
 
 Three properties of these tests worth naming:
 
@@ -970,6 +1016,18 @@ the subject can be.
   production would sample accounts or run it on a schedule rather than per scrape.
 - **No authentication or authorisation.** Any caller can move money on any
   account. Out of scope, and the first thing to add.
+- **The Compose project name is fixed** (`name: txnsvc`), so the stack's identity is
+  the project name rather than the working directory. Two clones on one machine share
+  containers and volumes, which is how you end up authenticating against a database
+  initialised by a different `.env` — see the `InvalidPasswordError` note in
+  **Getting started**. It is a deliberate trade for stable container names, which the
+  `scripts/` and the log and crash instructions depend on. Removing it would mean
+  every command that names `txnsvc-postgres` has to discover the name first.
+- **A pending compensating debit is not reserved.** A reversal waiting to claw
+  back a credit has no `account_id` until it settles, so `available_balance` does
+  not subtract it. The same thin-row property (D9) is why a reversal accepted
+  before its original cannot be authorised against an account at all — which is
+  why "add authentication" is not on its own a sufficient answer there.
 - **Single-region, single-writer.** All correctness rests on one PostgreSQL primary.
 - **The sweeper polls.** `LISTEN`/`NOTIFY` would make the common case
   event-driven, with polling retained as the fallback. The partial index makes the
