@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bank</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #14171a; --muted: #6b7480;
+    --line: #e3e6ea; --accent: #1f5fd0; --ok: #0f7a4a; --warn: #9a6400;
+    --bad: #b3261e; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --card: #1d2125; --ink: #e8eaed; --muted: #9aa4af;
+      --line: #2c3238; --accent: #6ea0f0; --ok: #4cc38a; --warn: #e0a33a;
+      --bad: #f2756a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 12px; color: var(--muted); font-weight: 600;
+       text-transform: uppercase; letter-spacing: .04em; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  header .who { margin-left: auto; text-align: right; font-size: 13px;
+                color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input {
+    width: 100%; padding: 9px 11px; font: inherit; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 180px; }
+  .field { margin-bottom: 12px; }
+  button {
+    font: inherit; padding: 9px 16px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  }
+  button.ghost { background: transparent; color: var(--accent); }
+  button.small { padding: 4px 10px; font-size: 13px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tabs button { background: transparent; color: var(--muted);
+                 border-color: var(--line); }
+  .tabs button[aria-selected="true"] { color: #fff; background: var(--accent);
+                                       border-color: var(--accent); }
+  .balance { font-size: 30px; font-weight: 600; letter-spacing: -.01em; }
+  .number { font-family: ui-monospace, "SF Mono", Menlo, monospace;
+            font-size: 17px; letter-spacing: .06em; }
+  .muted { color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; color: var(--muted); padding: 0 8px 8px 0;
+       font-weight: 600; }
+  td { padding: 9px 8px 9px 0; border-top: 1px solid var(--line);
+       vertical-align: middle; }
+  td.amt { text-align: right; font-variant-numeric: tabular-nums;
+           white-space: nowrap; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 99px;
+          font-size: 12px; border: 1px solid currentColor; }
+  .s-COMPLETED { color: var(--ok); }
+  .s-PENDING, .s-PROCESSING { color: var(--warn); }
+  .s-REJECTED, .s-DEAD_LETTER { color: var(--bad); }
+  .s-REVERSED, .s-NOT_APPLICABLE { color: var(--muted); }
+  #flash { padding: 11px 14px; border-radius: 7px; margin-bottom: 16px;
+           display: none; font-size: 14px; }
+  #flash.err { display: block; background: color-mix(in srgb, var(--bad) 14%, var(--card));
+               border: 1px solid var(--bad); }
+  #flash.ok  { display: block; background: color-mix(in srgb, var(--ok) 14%, var(--card));
+               border: 1px solid var(--ok); }
+  .payee { min-height: 20px; font-size: 13px; margin-top: 4px; }
+  .hidden { display: none !important; }
+  .empty { color: var(--muted); padding: 16px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Bank</h1>
+    <div class="who hidden" id="who"></div>
+    <button class="ghost small hidden" id="logout">Log out</button>
+  </header>
+
+  <div id="flash"></div>
+
+  <!-- ------------------------------------------------- not signed in -->
+  <section id="gate" class="card hidden">
+    <div class="tabs">
+      <button id="tabLogin" aria-selected="true">Log in</button>
+      <button id="tabSignup" aria-selected="false">Create account</button>
+    </div>
+
+    <form id="loginForm">
+      <div class="field">
+        <label for="li-email">Email</label>
+        <input id="li-email" type="email" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="li-pw">Password</label>
+        <input id="li-pw" type="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit">Log in</button>
+    </form>
+
+    <form id="signupForm" class="hidden">
+      <div class="field">
+        <label for="su-name">Full name</label>
+        <input id="su-name" required maxlength="200">
+      </div>
+      <div class="field">
+        <label for="su-email">Email</label>
+        <input id="su-email" type="email" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="su-pw">Password</label>
+        <input id="su-pw" type="password" autocomplete="new-password"
+               minlength="8" required>
+        <div class="muted">At least 8 characters.</div>
+      </div>
+      <button type="submit">Create account</button>
+    </form>
+  </section>
+
+  <!-- ------------------------------------------------- customer -->
+  <section id="customer" class="hidden">
+    <div class="card">
+      <h2>Your account</h2>
+      <div class="balance" id="balance">—</div>
+      <div class="muted" id="available"></div>
+      <div style="margin-top:14px">
+        <label>Account number — give this to anyone paying you</label>
+        <div class="number" id="myNumber">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Send money</h2>
+      <form id="sendForm">
+        <div class="row">
+          <div class="field">
+            <label for="toNumber">To account number</label>
+            <input id="toNumber" inputmode="numeric" autocomplete="off"
+                   placeholder="1234 5678 9012">
+            <div class="payee" id="payee"></div>
+          </div>
+          <div class="field">
+            <label for="amount">Amount</label>
+            <input id="amount" inputmode="decimal" placeholder="0.00">
+            <div class="payee"></div>
+          </div>
+        </div>
+        <button type="submit" id="sendBtn">Send</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Transactions</h2>
+      <div id="txWrap"><div class="empty">Nothing yet.</div></div>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------- admin -->
+  <section id="admin" class="hidden">
+    <div class="card">
+      <h2>All accounts — read only</h2>
+      <div class="muted" style="margin-bottom:12px">
+        An administrator can see every account and cannot move money. The API
+        refuses it, and so does the database role this session reads through.
+      </div>
+      <div id="adminWrap"><div class="empty">Loading…</div></div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ state */
+let me = null;          // { user, account }
+let pollTimer = null;
+
+const $ = (id) => document.getElementById(id);
+
+/* ------------------------------------------------------------------ http */
+
+function cookie(name) {
+  const hit = document.cookie.split("; ").find((c) => c.startsWith(name + "="));
+  return hit ? decodeURIComponent(hit.slice(name.length + 1)) : "";
+}
+
+/* The session cookie is httpOnly, so this page cannot read it -- which is the
+   point: an XSS bug cannot steal the session. The browser attaches it on its
+   own, and that convenience is exactly what makes CSRF possible, so every write
+   echoes the readable CSRF cookie back in a header the attacker's origin cannot
+   set. */
+async function api(method, path, body) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (method !== "GET") headers["X-CSRF-Token"] = cookie("txnsvc_csrf");
+
+  const res = await fetch(path, {
+    method,
+    headers,
+    credentials: "same-origin",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  if (res.status === 204) return null;
+
+  let data = null;
+  try { data = await res.json(); } catch { /* empty body */ }
+
+  if (!res.ok) {
+    const err = new Error((data && data.error && data.error.message) || res.statusText);
+    err.status = res.status;
+    err.code = data && data.error && data.error.code;
+    throw err;
+  }
+  return data;
+}
+
+/* ------------------------------------------------------------------ chrome */
+
+function flash(message, kind) {
+  const el = $("flash");
+  el.textContent = message;
+  el.className = kind;
+  if (kind === "ok") setTimeout(() => { el.className = ""; }, 4000);
+}
+
+function clearFlash() { $("flash").className = ""; }
+
+const grouped = (n) => (n || "").replace(/(\d{4})(?=\d)/g, "$1 ");
+const digits = (s) => (s || "").replace(/\D/g, "");
+
+function money(value, currency) {
+  // Amounts arrive as strings on purpose -- the backend never sends a float for
+  // money, and parsing one here would reintroduce exactly the error it avoids.
+  // Trim the stored 4 decimal places to 2 for display only.
+  const [whole, frac = ""] = String(value).split(".");
+  const shown = frac ? whole + "." + (frac + "00").slice(0, 2) : whole;
+  return currency ? shown + " " + currency : shown;
+}
+
+/* ------------------------------------------------------------------ render */
+
+function show(section) {
+  for (const id of ["gate", "customer", "admin"]) {
+    $(id).classList.toggle("hidden", id !== section);
+  }
+  const signedIn = section !== "gate";
+  $("who").classList.toggle("hidden", !signedIn);
+  $("logout").classList.toggle("hidden", !signedIn);
+}
+
+function renderAccount() {
+  const a = me.account;
+  $("balance").textContent = money(a.settled_balance, a.currency);
+  $("available").textContent =
+    a.available_balance === a.settled_balance
+      ? "Available in full"
+      : "Available now: " + money(a.available_balance, a.currency) +
+        " — the difference is money already on its way out";
+  $("myNumber").textContent = grouped(a.account_number);
+}
+
+function direction(t, myAccountId) {
+  if (t.kind === "TRANSFER") return "Sent";
+  if (t.kind === "REVERSAL") return "Reversal";
+  if (t.account_id !== myAccountId) return "—";
+  return t.type === "CREDIT" ? "In" : "Out";
+}
+
+function renderTransactions(rows) {
+  const wrap = $("txWrap");
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="empty">Nothing yet.</div>';
+    return;
+  }
+  const mine = me.account.id;
+  const table = document.createElement("table");
+  table.innerHTML =
+    "<thead><tr><th>Reference</th><th>What</th><th>Status</th>" +
+    '<th class="amt">Amount</th><th></th></tr></thead>';
+  const body = document.createElement("tbody");
+
+  for (const t of rows) {
+    const tr = document.createElement("tr");
+
+    const ref = document.createElement("td");
+    ref.className = "number";
+    ref.style.fontSize = "12px";
+    ref.textContent = t.transaction_id;
+    tr.appendChild(ref);
+
+    const what = document.createElement("td");
+    what.textContent = direction(t, mine);
+    tr.appendChild(what);
+
+    const st = document.createElement("td");
+    const pill = document.createElement("span");
+    pill.className = "pill s-" + t.status;
+    pill.textContent = t.status;
+    st.appendChild(pill);
+    tr.appendChild(st);
+
+    const amt = document.createElement("td");
+    amt.className = "amt";
+    amt.textContent = t.amount === null ? "—" : money(t.amount, t.currency);
+    tr.appendChild(amt);
+
+    const act = document.createElement("td");
+    act.className = "amt";
+    /* Only a settled transaction the user themselves submitted can be reversed
+       here. Rows with device_id SYSTEM are the opening credit and the legs the
+       worker writes for the other side of a transfer -- reversing those from
+       this page would be a nonsense operation. */
+    if (t.status === "COMPLETED" && t.kind !== "REVERSAL" &&
+        t.device_id !== "SYSTEM" && t.account_id === mine) {
+      const b = document.createElement("button");
+      b.className = "ghost small";
+      b.textContent = "Reverse";
+      b.onclick = () => reverse(t.transaction_id, b);
+      act.appendChild(b);
+    }
+    tr.appendChild(act);
+
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  wrap.replaceChildren(table);
+}
+
+function renderAdmin(accounts) {
+  const wrap = $("adminWrap");
+  if (!accounts.length) {
+    wrap.innerHTML = '<div class="empty">No accounts yet.</div>';
+    return;
+  }
+  const table = document.createElement("table");
+  table.innerHTML =
+    "<thead><tr><th>Holder</th><th>Account number</th>" +
+    '<th class="amt">Balance</th><th class="amt">Available</th></tr></thead>';
+  const body = document.createElement("tbody");
+  for (const a of accounts) {
+    const tr = document.createElement("tr");
+    for (const [text, cls] of [
+      [a.owner_name, ""],
+      [grouped(a.account_number), "number"],
+      [money(a.settled_balance, a.currency), "amt"],
+      [money(a.available_balance, a.currency), "amt"],
+    ]) {
+      const td = document.createElement("td");
+      td.className = cls;
+      if (cls === "number") td.style.fontSize = "13px";
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  wrap.replaceChildren(table);
+}
+
+/* ------------------------------------------------------------------ loading */
+
+async function refresh() {
+  me = await api("GET", "/auth/me");
+  $("who").textContent = me.user.full_name + " · " + me.user.role.toLowerCase();
+
+  if (me.user.role === "ADMIN") {
+    show("admin");
+    renderAdmin(await api("GET", "/accounts"));
+    return;
+  }
+
+  show("customer");
+  renderAccount();
+  renderTransactions(await api("GET", "/accounts/" + me.account.id + "/transactions"));
+}
+
+/* A 202 means the request is DURABLY ACCEPTED, not that the money has moved --
+   a worker applies it a moment later. So the UI shows it as PENDING and keeps
+   looking, rather than optimistically drawing a balance that is not true yet.
+   This is the one place the asynchronous design is visible to a person, and
+   pretending otherwise would make the screen lie. */
+function pollUntilSettled(txId, attempts = 25) {
+  clearTimeout(pollTimer);
+  let left = attempts;
+  const tick = async () => {
+    try {
+      const t = await api("GET", "/transactions/" + txId);
+      await refresh();
+      if (t.status === "PENDING" || t.status === "PROCESSING") {
+        if (--left > 0) pollTimer = setTimeout(tick, 400);
+        return;
+      }
+      if (t.status === "REJECTED") {
+        flash("Rejected — not enough money in the account.", "err");
+      } else if (t.status === "NOT_APPLICABLE") {
+        flash("That reversal did not apply to anything.", "err");
+      } else if (t.status === "DEAD_LETTER") {
+        flash("That request could not be completed and needs attention.", "err");
+      }
+    } catch (e) {
+      /* The row may not be readable for an instant after acceptance; keep
+         trying rather than reporting a failure that is not one. */
+      if (--left > 0) pollTimer = setTimeout(tick, 400);
+    }
+  };
+  pollTimer = setTimeout(tick, 300);
+}
+
+/* ------------------------------------------------------------------ actions */
+
+$("tabLogin").onclick = () => {
+  $("tabLogin").setAttribute("aria-selected", "true");
+  $("tabSignup").setAttribute("aria-selected", "false");
+  $("loginForm").classList.remove("hidden");
+  $("signupForm").classList.add("hidden");
+  clearFlash();
+};
+
+$("tabSignup").onclick = () => {
+  $("tabSignup").setAttribute("aria-selected", "true");
+  $("tabLogin").setAttribute("aria-selected", "false");
+  $("signupForm").classList.remove("hidden");
+  $("loginForm").classList.add("hidden");
+  clearFlash();
+};
+
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  clearFlash();
+  try {
+    await api("POST", "/auth/login", {
+      email: $("li-email").value.trim(),
+      password: $("li-pw").value,
+    });
+    $("li-pw").value = "";
+    await refresh();
+  } catch (err) {
+    flash(err.message, "err");
+  }
+};
+
+$("signupForm").onsubmit = async (e) => {
+  e.preventDefault();
+  clearFlash();
+  try {
+    await api("POST", "/auth/signup", {
+      full_name: $("su-name").value.trim(),
+      email: $("su-email").value.trim(),
+      password: $("su-pw").value,
+    });
+    await api("POST", "/auth/login", {
+      email: $("su-email").value.trim(),
+      password: $("su-pw").value,
+    });
+    $("su-pw").value = "";
+    await refresh();
+    flash("Account opened. Your opening balance is ready to use.", "ok");
+  } catch (err) {
+    flash(err.message, "err");
+  }
+};
+
+$("logout").onclick = async () => {
+  clearTimeout(pollTimer);
+  try { await api("POST", "/auth/logout"); } catch { /* going anyway */ }
+  me = null;
+  show("gate");
+  clearFlash();
+};
+
+/* The payee lookup: the number is confirmed, and named, before any money
+   moves. The check digit means most typos never reach the server at all. */
+let lookupSeq = 0;
+$("toNumber").oninput = async () => {
+  const number = digits($("toNumber").value);
+  const out = $("payee");
+  const seq = ++lookupSeq;
+
+  if (number.length !== 12) {
+    out.textContent = number.length ? number.length + " of 12 digits" : "";
+    out.style.color = "var(--muted)";
+    return;
+  }
+
+  out.textContent = "Checking…";
+  out.style.color = "var(--muted)";
+  try {
+    const p = await api("GET", "/payees/" + number);
+    if (seq !== lookupSeq) return;          // a later keystroke won the race
+    out.textContent = "→ " + p.owner_name;
+    out.style.color = "var(--ok)";
+  } catch (err) {
+    if (seq !== lookupSeq) return;
+    out.textContent = err.status === 422
+      ? "That number fails its check digit — look again"
+      : "No account has that number";
+    out.style.color = "var(--bad)";
+  }
+};
+
+$("sendForm").onsubmit = async (e) => {
+  e.preventDefault();
+  clearFlash();
+  const btn = $("sendBtn");
+  btn.disabled = true;
+  try {
+    const sent = await api("POST", "/transfers", {
+      /* The idempotency key is generated here, so a double click or a retry on
+         a flaky connection cannot send the money twice. */
+      transfer_id: "TRF-" + crypto.randomUUID(),
+      to_account_number: digits($("toNumber").value),
+      amount: $("amount").value.trim(),
+    });
+    $("amount").value = "";
+    $("toNumber").value = "";
+    $("payee").textContent = "";
+    flash("Accepted — settling now.", "ok");
+    await refresh();
+    pollUntilSettled(sent.transaction_id);
+  } catch (err) {
+    flash(err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+async function reverse(txId, button) {
+  clearFlash();
+  button.disabled = true;
+  try {
+    const r = await api("POST", "/transactions/" + txId + "/reverse",
+                        { account_id: me.account.id });
+    flash("Reversal accepted — settling now.", "ok");
+    await refresh();
+    pollUntilSettled(r.transaction_id);
+  } catch (err) {
+    flash(err.message, "err");
+    button.disabled = false;
+  }
+}
+
+/* ------------------------------------------------------------------ boot */
+
+(async () => {
+  try {
+    await refresh();                 // an existing session cookie just works
+  } catch {
+    show("gate");
+  }
+})();
+</script>
+</body>
+</html>

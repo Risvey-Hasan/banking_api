@@ -1,12 +1,13 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from app import db, redis_client, metrics
-from app.api import accounts, transactions
+from app.api import accounts, auth, transactions, transfers
 from app.errors import (
     AppError,
     app_error_handler,
@@ -36,8 +37,22 @@ app.add_exception_handler(AppError, app_error_handler)
 app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(db.DatabaseUnavailable, database_unavailable_handler)
 
+app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(transactions.router)
+app.include_router(transfers.router)
+
+
+# One self-contained page, served same-origin by the API itself. Same origin is
+# the point rather than a shortcut: it means no CORS configuration, and it means
+# the session cookie can be SameSite=Strict, which blocks cross-site requests
+# before the CSRF token is even consulted.
+_INDEX = Path(__file__).parent / "static" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    return FileResponse(_INDEX, media_type="text/html")
 
 
 @app.get("/health")

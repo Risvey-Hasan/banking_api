@@ -63,6 +63,17 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       PG_POOL_MAX: ${API_PG_POOL_MAX:-5}
+      # The image does not carry .env, so every setting the API needs must be
+      # passed here. A setting present in .env and absent from this block
+      # silently falls back to its code default inside the container -- which
+      # looks exactly like the setting not working.
+      SIGNUP_CURRENCY: ${SIGNUP_CURRENCY:-SAR}
+      SIGNUP_OPENING_BALANCE: ${SIGNUP_OPENING_BALANCE:-1000.0000}
+      SESSION_LIFETIME_HOURS: ${SESSION_LIFETIME_HOURS:-12}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ADMIN_FULL_NAME: ${ADMIN_FULL_NAME:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     ports:
       # ONE fixed host port by default, not a range. A range ("8000-8002:8000")
       # lets Docker choose, so the README's localhost:8000 and every hardcoded

@@ -42,13 +42,21 @@ async def test_redelivered_entry_is_a_noop(client, account):
 
 
 @pytest.mark.slow
-async def test_worker_killed_mid_flight_loses_nothing(client, empty_account):
-    """Section 7: SIGKILL the workers during load; every credit lands once."""
+async def test_worker_killed_mid_flight_loses_nothing(client, auth_headers, account):
+    """Section 7: SIGKILL the workers during load; every credit lands once.
+
+    The account starts with its sign-up balance rather than at zero -- one
+    account per user means there is no way to ask for an empty one, and it was
+    never the point. What matters is that the 200 credits each land exactly
+    once, so the assertion is opening + 200 rather than exactly 200.
+    """
+    opening = await settled(client, account)
     ids = [new_id() for _ in range(200)]
 
-    async with httpx.AsyncClient(base_url=API, timeout=120.0, limits=LIMITS) as c:
+    async with httpx.AsyncClient(base_url=API, timeout=120.0, limits=LIMITS,
+                                 headers=auth_headers) as c:
         submitting = asyncio.gather(
-            *(c.post("/transactions", json=payload(tx, empty_account, "CREDIT", "1.00"))
+            *(c.post("/transactions", json=payload(tx, account, "CREDIT", "1.00"))
               for tx in ids)
         )
         await asyncio.sleep(0.2)
@@ -61,4 +69,4 @@ async def test_worker_killed_mid_flight_loses_nothing(client, empty_account):
         await asyncio.gather(*(wait_for_terminal(client, tx, 180.0) for tx in ids))
     )
     assert states == {"COMPLETED"}
-    assert await settled(client, empty_account) == Decimal("200.00")
+    assert await settled(client, account) == opening + Decimal("200.00")

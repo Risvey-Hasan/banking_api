@@ -15,7 +15,8 @@ _CLAIM = """
     RETURNING transaction_id,
               kind::text AS kind,
               type::text AS type,
-              account_id, amount, reverses_id, parked_since
+              account_id, to_account_id, claimed_account_id,
+              amount, currency, reverses_id, parked_since
 """
 
 _DEBIT = """
@@ -43,8 +44,8 @@ _FINALISE = """
 # row -> account row; the original's own apply path takes original -> account,
 # so no cycle exists.
 _ORIGINAL_FOR_REVERSAL = """
-    SELECT status::text AS status, type::text AS type,
-           account_id, amount, currency
+    SELECT status::text AS status, kind::text AS kind, type::text AS type,
+           account_id, to_account_id, amount, currency
       FROM transactions
      WHERE transaction_id = $1
        FOR UPDATE
@@ -82,6 +83,32 @@ _PARK = """
 # and the schema refuses to store a reversal that disagrees with it.
 _COMPENSATION = {"DEBIT": "CREDIT", "CREDIT": "DEBIT"}
 
+# Lock BOTH accounts, in ascending id order, before touching either.
+#
+# This is the one new invariant transfers introduce. A transfer needs two row
+# locks, and two locks taken in request order deadlock the moment A->B and B->A
+# run at the same time: each transaction holds the row the other is waiting for.
+# Ordering by id means every transfer in the system queues for the same two rows
+# in the same sequence, so a cycle cannot form. PostgreSQL applies FOR UPDATE
+# after the sort, so the ORDER BY is what fixes the acquisition order.
+_LOCK_PAIR = """
+    SELECT id FROM accounts
+     WHERE id = $1 OR id = $2
+     ORDER BY id
+       FOR UPDATE
+"""
+
+# The other side's ledger row, written in the same transaction as the money.
+# Its id is derived from the transfer's, so it is idempotent for free.
+_LEG = """
+    INSERT INTO transactions
+        (transaction_id, kind, type, status, account_id, amount, currency,
+         device_id, client_ts, accepted_at, processed_at, next_attempt_at)
+    VALUES ($1, 'TRANSACTION', $5::tx_type, 'COMPLETED', $2, $3, $4,
+            'SYSTEM', now(), now(), now(), now())
+    ON CONFLICT (transaction_id) DO NOTHING
+"""
+
 
 async def apply_transaction(conn: asyncpg.Connection, transaction_id: str) -> str | None:
     async with conn.transaction():
@@ -90,6 +117,8 @@ async def apply_transaction(conn: asyncpg.Connection, transaction_id: str) -> st
             return None
         if claimed["kind"] == "REVERSAL":
             return await _apply_reversal(conn, claimed)
+        if claimed["kind"] == "TRANSFER":
+            return await _apply_transfer(conn, claimed)
         return await _apply_original(conn, claimed)
 
 
@@ -108,6 +137,64 @@ async def _apply_original(conn: asyncpg.Connection, claimed) -> str:
     return "COMPLETED"
 
 
+async def _apply_transfer(conn: asyncpg.Connection, claimed) -> str:
+    """Move money out of one account and into another, atomically.
+
+    The transfer row IS the sender's debit leg; the recipient's credit row is
+    created here, in the same database transaction as both balance changes. So
+    either the money left and arrived and both ledger rows exist, or none of it
+    happened. There is no state in which it is in flight.
+    """
+    tx = claimed["transaction_id"]
+    sender, recipient = claimed["account_id"], claimed["to_account_id"]
+    amount, currency = claimed["amount"], claimed["currency"]
+
+    await conn.fetch(_LOCK_PAIR, sender, recipient)
+
+    # Guarded exactly like any other debit, so a transfer can no more overdraw
+    # an account than a plain withdrawal can.
+    if await conn.fetchval(_DEBIT, sender, amount) is None:
+        await conn.execute(_FINALISE, tx, "REJECTED", "INSUFFICIENT_FUNDS")
+        return "REJECTED"
+
+    await conn.fetchval(_CREDIT, recipient, amount)
+    await conn.execute(_LEG, f"{tx}-IN", recipient, amount, currency, "CREDIT")
+    await conn.execute(_FINALISE, tx, "COMPLETED", None)
+    return "COMPLETED"
+
+
+async def _reverse_transfer(conn: asyncpg.Connection, claimed, original) -> str:
+    """Undo a transfer: claw back from the recipient, return it to the sender.
+
+    Two-sided, because the transfer was. Compensating only the sender -- which
+    is what the generic path would do, since a transfer's type is DEBIT -- would
+    credit money into existence. That is the D12 mistake in a new costume.
+    """
+    tx = claimed["transaction_id"]
+    target = claimed["reverses_id"]
+    sender, recipient = original["account_id"], original["to_account_id"]
+    amount, currency = original["amount"], original["currency"]
+
+    await conn.fetch(_LOCK_PAIR, sender, recipient)
+
+    # The clawback is guarded. If the recipient has spent it, the reversal waits
+    # rather than overdrawing them: invariant I2 outranks the reversal.
+    if await conn.fetchval(_DEBIT, recipient, amount) is None:
+        return await _park_or_dead_letter(
+            conn, claimed,
+            "RECIPIENT_FUNDS_UNAVAILABLE",
+            "RECIPIENT_FUNDS_NEVER_AVAILABLE",
+        )
+
+    await conn.fetchval(_CREDIT, sender, amount)
+    await conn.execute(_LEG, f"{tx}-OUT", recipient, amount, currency, "DEBIT")
+    await conn.execute(_MARK_REVERSED, target)
+    await conn.execute(
+        _SETTLE_REVERSAL, tx, sender, amount, currency, "CREDIT", "DEBIT",
+    )
+    return "COMPLETED"
+
+
 async def _apply_reversal(conn: asyncpg.Connection, claimed) -> str:
     """Compensate the transaction this reversal targets.
 
@@ -122,6 +209,25 @@ async def _apply_reversal(conn: asyncpg.Connection, claimed) -> str:
 
     if original is None or original["status"] != "COMPLETED":
         return await _cannot_settle_yet(conn, claimed, original)
+
+    # The accept path authorised the caller against the account they CLAIMED
+    # this reversal concerns -- it could not check the original, which section 8
+    # allows not to exist yet. This is where the claim meets reality. A caller
+    # who asked to reverse somebody else's transaction gets a reversal that
+    # terminates without moving a cent.
+    if original["account_id"] != claimed["claimed_account_id"]:
+        log.warning(
+            "reversal %s claimed account %s but %s belongs to %s",
+            tx, claimed["claimed_account_id"], target, original["account_id"],
+        )
+        await conn.execute(_FINALISE, tx, "NOT_APPLICABLE", "ACCOUNT_MISMATCH")
+        return "NOT_APPLICABLE"
+
+    # A transfer touched two accounts, so undoing it must touch both. Only the
+    # sender can get here: the claim check above compares against the
+    # ORIGINAL's account_id, which for a transfer is the sender.
+    if original["kind"] == "TRANSFER":
+        return await _reverse_transfer(conn, claimed, original)
 
     direction = _COMPENSATION[original["type"]]
     account_id, amount = original["account_id"], original["amount"]

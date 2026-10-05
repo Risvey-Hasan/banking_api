@@ -1,3 +1,4 @@
+from decimal import Decimal
 from urllib.parse import quote_plus
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,6 +33,28 @@ class Settings(BaseSettings):
 
     reversal_park_seconds: float = 0.25
     reversal_park_horizon_hours: int = 24
+
+    # --- identity and sessions ------------------------------------------
+    session_lifetime_hours: int = 12
+    session_cookie_name: str = "txnsvc_session"
+    csrf_cookie_name: str = "txnsvc_csrf"
+    # Secure cookies are refused by browsers over plain http, so local
+    # development needs this off. Anything reachable from a network needs it on.
+    cookie_secure: bool = False
+
+    # --- sign-up ---------------------------------------------------------
+    # Every account opens with a demo balance, recorded as a genesis credit so
+    # the money has an origin the ledger can explain (decision D10). This is a
+    # demo affordance, not banking: a real deposit arrives from outside.
+    signup_currency: str = "SAR"
+    signup_opening_balance: Decimal = Decimal("1000.0000")
+
+    # --- the admin, created at API boot ---------------------------------
+    # All three blank means no admin is created. There is no API path to make
+    # one, by design.
+    admin_full_name: str = ""
+    admin_email: str = ""
+    admin_password: str = ""
 
     accept_grace_seconds: float = 5.0
     sweeper_batch: int = 500

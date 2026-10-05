@@ -4,6 +4,8 @@ from decimal import Decimal
 from tests.helpers import (
     new_id,
     payload,
+    reversal_id,
+    reverse,
     settled,
     wait_for_status,
     wait_for_terminal,
@@ -21,10 +23,10 @@ async def test_reversal_restores_the_balance(client, account):
     tx = await _completed_debit(client, account)
     assert await settled(client, account) == Decimal("749.25")
 
-    r = await client.post(f"/transactions/{tx}/reverse")
+    r = await reverse(client, tx, account)
     assert r.status_code == 202
 
-    assert await wait_for_terminal(client, f"REV-{tx}") == "COMPLETED"
+    assert await wait_for_terminal(client, reversal_id(account, tx)) == "COMPLETED"
     await wait_for_status(client, tx, "REVERSED", 5.0)
     assert await settled(client, account) == Decimal("1000.00")
 
@@ -51,16 +53,16 @@ async def test_reversing_a_credit_debits_and_creates_no_money(client, account):
     tx = await _completed_credit(client, account, "500.00")
     assert await settled(client, account) == Decimal("1500.00")
 
-    r = await client.post(f"/transactions/{tx}/reverse")
+    r = await reverse(client, tx, account)
     assert r.status_code == 202
 
-    assert await wait_for_terminal(client, f"REV-{tx}") == "COMPLETED"
+    assert await wait_for_terminal(client, reversal_id(account, tx)) == "COMPLETED"
     await wait_for_status(client, tx, "REVERSED", 5.0)
 
     # The balance the bug produced here was 2000.00.
     assert await settled(client, account) == Decimal("1000.00")
 
-    reversal = (await client.get(f"/transactions/REV-{tx}")).json()
+    reversal = (await client.get(f"/transactions/{reversal_id(account, tx)}")).json()
     assert reversal["type"] == "DEBIT"            # the direction it moved money
     assert reversal["reverses_type"] == "CREDIT"  # the direction it opposed
 
@@ -81,10 +83,10 @@ async def test_reversing_a_credit_waits_rather_than_overdrawing(client, conn, ac
     assert await wait_for_terminal(client, spend) == "COMPLETED"
     assert await settled(client, account) == Decimal("0.00")
 
-    await client.post(f"/transactions/{credit}/reverse")
+    await reverse(client, credit, account)
     await asyncio.sleep(2.0)   # several park cycles at 250 ms
 
-    reversal = (await client.get(f"/transactions/REV-{credit}")).json()
+    reversal = (await client.get(f"/transactions/{reversal_id(account, credit)}")).json()
     assert reversal["status"] == "PENDING"
     assert reversal["type"] is None          # it has not moved money
     assert await settled(client, account) == Decimal("0.00")
@@ -94,7 +96,7 @@ async def test_reversing_a_credit_waits_rather_than_overdrawing(client, conn, ac
 
     reason = await conn.fetchval(
         "SELECT last_error FROM transactions WHERE transaction_id = $1",
-        f"REV-{credit}",
+        reversal_id(account, credit),
     )
     assert reason == "REVERSAL_FUNDS_UNAVAILABLE"
 
@@ -106,15 +108,15 @@ async def test_reversing_a_credit_waits_rather_than_overdrawing(client, conn, ac
 async def test_duplicate_reversal_credits_once(client, account):
     tx = await _completed_debit(client, account)
 
-    first = await client.post(f"/transactions/{tx}/reverse")
-    second = await client.post(f"/transactions/{tx}/reverse")
-    third = await client.post(f"/transactions/{tx}/reverse")
+    first = await reverse(client, tx, account)
+    second = await reverse(client, tx, account)
+    third = await reverse(client, tx, account)
 
     assert first.status_code == 202
     assert second.status_code == 200
     assert third.status_code == 200
 
-    assert await wait_for_terminal(client, f"REV-{tx}") == "COMPLETED"
+    assert await wait_for_terminal(client, reversal_id(account, tx)) == "COMPLETED"
     assert await settled(client, account) == Decimal("1000.00")
 
 
@@ -123,16 +125,16 @@ async def test_out_of_order_converges_to_zero_effect(client, account):
     tx = new_id()
     body = payload(tx, account, "DEBIT", "250.75")
 
-    await client.post(f"/transactions/{tx}/reverse")   # before the original exists
+    await reverse(client, tx, account)   # before the original exists
     await client.post("/transactions", json=body)
     await client.post("/transactions", json=body)
-    await client.post(f"/transactions/{tx}/reverse")
+    await reverse(client, tx, account)
     await client.post("/transactions", json=body)
 
     # COMPLETED is terminal for the debit but intermediate for one about to be
     # reversed. Wait on the reversal: it settles the original in the same
     # database transaction, so REVERSED is guaranteed once REV- is COMPLETED.
-    assert await wait_for_terminal(client, f"REV-{tx}", 60.0) == "COMPLETED"
+    assert await wait_for_terminal(client, reversal_id(account, tx), 60.0) == "COMPLETED"
     await wait_for_status(client, tx, "REVERSED", 5.0)
     assert await settled(client, account) == Decimal("1000.00")
 
@@ -142,16 +144,16 @@ async def test_reversing_a_rejected_transaction_is_not_applicable(client, accoun
     await client.post("/transactions", json=payload(tx, account, "DEBIT", "9999.00"))
     assert await wait_for_terminal(client, tx) == "REJECTED"
 
-    await client.post(f"/transactions/{tx}/reverse")
-    assert await wait_for_terminal(client, f"REV-{tx}", 60.0) == "NOT_APPLICABLE"
+    await reverse(client, tx, account)
+    assert await wait_for_terminal(client, reversal_id(account, tx), 60.0) == "NOT_APPLICABLE"
     assert await settled(client, account) == Decimal("1000.00")
 
 
 async def test_a_reversal_cannot_be_reversed(client, account):
     tx = await _completed_debit(client, account)
-    await client.post(f"/transactions/{tx}/reverse")
-    assert await wait_for_terminal(client, f"REV-{tx}") == "COMPLETED"
+    await reverse(client, tx, account)
+    assert await wait_for_terminal(client, reversal_id(account, tx)) == "COMPLETED"
 
-    r = await client.post(f"/transactions/REV-{tx}/reverse")
+    r = await reverse(client, reversal_id(account, tx), account)
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "NOT_REVERSIBLE"
