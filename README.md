@@ -81,9 +81,9 @@ docker compose ps
 
 Expected: `postgres` and `redis` healthy, `migrate` **Exited (0)**, and
 `txnsvc-api-1`, `txnsvc-worker-1`, `txnsvc-worker-2`, `txnsvc-sweeper-1` up. Two
-workers by default is deliberate — sections 5 and 16 of the task require
-correctness across independent workers, so the default stack demonstrates it
-rather than requiring a flag.
+workers by default is deliberate — correctness across independent workers is a
+core requirement, so the default stack demonstrates it rather than requiring a
+flag.
 
 ### 3. Verify
 
